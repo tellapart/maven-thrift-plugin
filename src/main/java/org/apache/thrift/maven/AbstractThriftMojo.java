@@ -16,7 +16,9 @@ import java.io.FilenameFilter;
 import java.io.IOException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
@@ -129,6 +131,11 @@ abstract class AbstractThriftMojo extends AbstractMojo {
     private Set<String> excludes = ImmutableSet.of();
 
     /**
+     * A map of runtime dependent projects and their source roots.
+     */
+    private Map<Artifact, String> runtimeSourceRoots;
+
+    /**
      * Executes the mojo.
      */
     public void execute() throws MojoExecutionException, MojoFailureException {
@@ -142,6 +149,14 @@ abstract class AbstractThriftMojo extends AbstractMojo {
                 } else {
                     ImmutableSet<File> derivedThriftPathElements =
                             makeThriftPathFromJars(temporaryThriftFileDirectory, getDependencyArtifactFiles());
+
+                    Set<File> runtimeSourceRoots = newHashSet();
+                    for(String sourceRoot: getRuntimeSourceRootMap().values()) {
+                      File thriftSourceFile = new File(sourceRoot + "/src/main/thrift");
+                      if (thriftSourceFile.exists() && thriftSourceFile.isDirectory()) {
+                        runtimeSourceRoots.add(thriftSourceFile);
+                      }
+                    }
                     final File outputDirectory = getOutputDirectory();
                     outputDirectory.mkdirs();
 
@@ -153,6 +168,7 @@ abstract class AbstractThriftMojo extends AbstractMojo {
                             .addThriftPathElement(thriftSourceRoot)
                             .addThriftPathElements(derivedThriftPathElements)
                             .addThriftPathElements(asList(additionalThriftPathElements))
+                            .addThriftPathElements(ImmutableSet.copyOf(runtimeSourceRoots))
                             .addThriftFiles(thriftFiles)
                             .build();
                     final int exitStatus = thrift.compile();
@@ -207,11 +223,35 @@ abstract class AbstractThriftMojo extends AbstractMojo {
      */
     private ImmutableSet<File> getDependencyArtifactFiles() {
         Set<File> dependencyArtifactFiles = newHashSet();
+        Map<Artifact, String> runtimeSources = getRuntimeSourceRootMap();
         for (Artifact artifact : getDependencyArtifacts()) {
-            dependencyArtifactFiles.add(artifact.getFile());
+            // Dont return this if we have a runtime source.
+            if(!runtimeSources.containsKey(artifact)) {
+              dependencyArtifactFiles.add(artifact.getFile());
+            }
         }
         return ImmutableSet.copyOf(dependencyArtifactFiles);
     }
+
+  protected Map<Artifact, String> getRuntimeSourceRootMap() {
+
+    if(runtimeSourceRoots == null) {
+      runtimeSourceRoots = new HashMap<Artifact, String>();
+      @SuppressWarnings("unchecked")
+      Map<String, MavenProject> runtimeProjectRefs = project.getProjectReferences();
+      for (Artifact artifact : getDependencyArtifacts()) {
+        String projectKey = artifact.getGroupId() + ":" + artifact.getArtifactId()
+            + ":" + artifact.getVersion();
+        if (runtimeProjectRefs.containsKey(projectKey)) {
+          File sourceRoot = runtimeProjectRefs.get(projectKey).getBasedir();
+          if (sourceRoot != null) {
+            runtimeSourceRoots.put(artifact, sourceRoot.getAbsolutePath());
+          }
+        }
+      }
+    }
+    return runtimeSourceRoots;
+  }
 
     /**
      * @throws IOException
@@ -270,7 +310,8 @@ abstract class AbstractThriftMojo extends AbstractMojo {
         checkArgument(directory.isDirectory(), "%s is not a directory", directory);
         // TODO(gak): plexus-utils needs generics
         @SuppressWarnings("unchecked")
-        List<File> thriftFilesInDirectory = getFiles(directory, join(",", includes), join(",", excludes));
+        List<File> thriftFilesInDirectory = getFiles(directory, join(",", includes), join(",",
+            excludes));
         return ImmutableSet.copyOf(thriftFilesInDirectory);
     }
 
